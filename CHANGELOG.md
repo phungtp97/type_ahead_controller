@@ -1,3 +1,7 @@
+## 0.0.5
+* Clean code
+* Update description
+
 ## 0.0.4
 * Add compileSdk => 33
 * Add namespace config for android

@@ -1,6 +1,6 @@
 name: type_ahead_text_field
-description: Making Facebook-like type-to-tag dynamic TextField, this feature set enhances the functionality of a TextField in Flutter by providing dynamic, prefix-based suggestions and customizations. It allows for seamless integration of user mentions, hashtags, and other prefix-triggered actions directly within your text input fields.
-version: 0.0.4
+description: Making Facebook-like type-to-tag dynamic TextField, this feature set enhances the functionality of a TextField by adding triggering by mention with custom prefix @, #, $, etc.
+version: 0.0.5
 homepage: https://github.com/phungtp97/flutter-type-ahead-controller
 
 environment:

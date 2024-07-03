@@ -13,7 +13,10 @@ class SuggestedDataWrapper<T> {
   ///Check with data
   final String id;
 
-  SuggestedDataWrapper({required this.id, required this.prefix, this.item});
+  final String text;
+
+  SuggestedDataWrapper(
+      {required this.id, required this.prefix, this.item, required this.text});
 
   @override
   bool operator ==(Object other) {
@@ -22,13 +25,20 @@ class SuggestedDataWrapper<T> {
         other.id == this.id;
   }
 
-  @override
   int get hashCode => super.hashCode;
 }
 
-class TypeAheadTextFieldController extends TextEditingController {
+class TypeAheadTextFieldController<T> extends TextEditingController {
   ///set this scroll controller to TextField constructor to translate the suggestion dialog base on scroll controller offset
   final ScrollController scrollController = new ScrollController();
+  OnRemovingMatchedTextAction _onRemovingMatchedTextAction =
+      OnRemovingMatchedTextAction.nothing;
+
+  OnRemovingMatchedTextAction get onRemovingMatchedTextAction =>
+      _onRemovingMatchedTextAction;
+
+  bool isDeleting = false;
+  String? lastText;
 
   ///the TextField Key, of course
   late final GlobalKey<EditableTextState> textFieldKey;
@@ -45,25 +55,28 @@ class TypeAheadTextFieldController extends TextEditingController {
   ///called when match or non match the prefix
   Function(PrefixMatchState? prefixMatchState)? onStateChanged;
 
+  String Function(PrefixMatchState? prefixMatchState)? onStateChange;
+
   ///set a list of suggestion based on the matching prefix, you can change it later, make sure to call setState
-  Set<SuggestedDataWrapper>? _suggestibleData;
+  Set<SuggestedDataWrapper<T>>? _suggestibleData;
 
   ///custom span for matching text
-  TextSpan Function(SuggestedDataWrapper data)? customSpanBuilder;
+  TextSpan Function(SuggestedDataWrapper<T> data)? customSpanBuilder;
 
   ///call when a matching text get removed
-  Function(List<SuggestedDataWrapper> data)? onRemove;
+  Function(List<SuggestedDataWrapper<T>> data)? onRemove;
 
-  final BehaviorSubject<PrefixMatchState?> _bhMatchedStateList =
+  final BehaviorSubject<PrefixMatchState?> _bhMatchedState =
       BehaviorSubject.seeded(null);
 
-  final BehaviorSubject<List<SuggestedDataWrapper>?> _bhMatchedSuggestionList =
-      BehaviorSubject.seeded(null);
+  final BehaviorSubject<List<SuggestedDataWrapper<T>>?>
+      _bhMatchedSuggestionList = BehaviorSubject.seeded(null);
 
-  ValueStream<PrefixMatchState?> get matchStateListStream =>
-      _bhMatchedStateList.stream;
+  ValueStream<PrefixMatchState?> get matchStateStream => _bhMatchedState.stream;
 
-  ValueStream<List<SuggestedDataWrapper>?> get matchedSuggestionListStream =>
+  PrefixMatchState? get currentMatchState => _bhMatchedState.value;
+
+  ValueStream<List<SuggestedDataWrapper<T>>?> get matchedSuggestionListStream =>
       _bhMatchedSuggestionList.stream;
 
   late final StreamSubscription<PrefixMatchState?> _subscription;
@@ -76,9 +89,9 @@ class TypeAheadTextFieldController extends TextEditingController {
       this.edgePadding =
           const EdgeInsets.only(left: 8, right: 0, top: 20, bottom: 0),
       this.onStateChanged,
-      Set<SuggestedDataWrapper>? suggestibleData}) {
+      Set<SuggestedDataWrapper<T>>? suggestibleData}) {
     this._suggestibleData = suggestibleData;
-    _subscription = _bhMatchedStateList.listen((value) {
+    _subscription = _bhMatchedState.listen((value) {
       _notifySuggestions();
     });
   }
@@ -86,7 +99,7 @@ class TypeAheadTextFieldController extends TextEditingController {
   Set<String>? _prefixes;
   double? _scrollOffset;
   double? devicePixelRatio;
-  Set<SuggestedDataWrapper> _approvedData = Set();
+  Set<SuggestedDataWrapper<T>> _approvedData = Set();
   String? _lastCheckedText;
   late double _cursorHeight;
   late double _cursorWidth;
@@ -95,10 +108,9 @@ class TypeAheadTextFieldController extends TextEditingController {
   TextSpan buildTextSpan(
       {BuildContext? context, TextStyle? style, bool? withComposing}) {
     List<TextSpan> children = [];
-
     List<SuggestedDataWrapper> tempMatchedList = [];
-
-    if (_suggestibleData != null && _approvedData.length > 0) {
+    isDeleting = lastText != null && lastText!.length > text.length;
+    if (_suggestibleData != null && _approvedData.isNotEmpty) {
       _prefixes = appliedPrefixes;
 
       List<String> patterns = [];
@@ -106,7 +118,7 @@ class TypeAheadTextFieldController extends TextEditingController {
       _prefixes!.forEach((e) {
         var matchedWithPrefix = _approvedData
             .where((element) => element.prefix == e)
-            .map((e) => e.id)
+            .map((e) => e.text)
             .toSet();
         if (matchedWithPrefix.length > 0) {
           patterns.add(r'(?<=' +
@@ -118,17 +130,17 @@ class TypeAheadTextFieldController extends TextEditingController {
       });
 
       var patternStr = patterns.join('|');
-
+      //print('patternStr -- $patternStr');
       _allRegex = RegExp(patternStr);
       text.splitMapJoin(_allRegex, onMatch: (s) {
         String itemText = text.trim().substring(s.start, s.end);
-        print('on match -- $itemText');
+        //print('on match -- $itemText');
         String prefix = text.substring(s.start - 1, s.start);
-        SuggestedDataWrapper? data;
+        SuggestedDataWrapper<T>? data;
         try {
           data = _approvedData.length > 0
               ? _approvedData.firstWhere(
-                  (data) => data.id == itemText && prefix == prefix,
+                  (data) => data.text == itemText && prefix == prefix,
                 )
               : null;
         } catch (e) {}
@@ -138,13 +150,51 @@ class TypeAheadTextFieldController extends TextEditingController {
                 text: itemText,
                 style: style,
               );
-
+        //print('add text -- $itemText - $data');
         children.add(span);
 
         if (data != null) {
           tempMatchedList.add(data);
         }
 
+        int? singleOffset;
+
+        if (selection.baseOffset == selection.extentOffset) {
+          singleOffset = selection.baseOffset;
+        }
+
+        if (isDeleting && singleOffset != null && singleOffset == s.end) {
+          /// Decide what to do next when user deleting then reach the end of the matched text
+
+          switch (_onRemovingMatchedTextAction) {
+            case OnRemovingMatchedTextAction.selectAll:
+
+              /// As [OnRemovingMatchedTextAction] is set to [OnRemovingMatchedTextAction.selectAll]
+              ///select all matched word if user deleted the character next to the matched word
+
+              WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+                selection = TextSelection(
+                    baseOffset: s.start,
+                    extentOffset: s.end,
+                    affinity: TextAffinity.downstream,
+                    isDirectional: false);
+              });
+              break;
+            case OnRemovingMatchedTextAction.removeAll:
+
+              /// As [OnRemovingMatchedTextAction] is set to [OnRemovingMatchedTextAction.removeAll]
+              /// remove all matched word if user deleted the character next to the matched word
+              WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+                text = text.replaceRange(s.start, s.end, '');
+              });
+              break;
+            case OnRemovingMatchedTextAction.nothing:
+
+              /// do nothing
+
+              break;
+          }
+        }
         return text;
       }, onNonMatch: (s) {
         children.add(
@@ -177,52 +227,56 @@ class TypeAheadTextFieldController extends TextEditingController {
           painter.layout();
         } catch (e) {}
 
-        _cursorWidth = (textFieldKey.currentWidget as TextField).cursorWidth;
-        _cursorHeight =
-            ((textFieldKey.currentWidget as TextField).cursorHeight ??
-                style?.fontSize ??
-                Theme.of(textFieldKey.currentContext!)
-                    .textTheme
-                    .bodySmall!
-                    .fontSize!);
+        var textField = (textFieldKey.currentWidget as TextField?);
+        if (textField is TextField) {
+          _cursorWidth = textField.cursorWidth;
+          _cursorHeight =
+              ((textFieldKey.currentWidget as TextField).cursorHeight ??
+                  style?.fontSize ??
+                  Theme.of(textFieldKey.currentContext!)
+                      .textTheme
+                      .bodySmall!
+                      .fontSize!);
 
-        if (devicePixelRatio == null && textFieldKey.currentContext != null) {
-          devicePixelRatio =
-              MediaQuery.of(textFieldKey.currentContext!).devicePixelRatio;
+          if (devicePixelRatio == null && textFieldKey.currentContext != null) {
+            devicePixelRatio =
+                MediaQuery.of(textFieldKey.currentContext!).devicePixelRatio;
+          }
+
+          Rect caretPrototype =
+              Rect.fromLTWH(0.0, 0.0, _cursorWidth, _cursorHeight);
+
+          TextPosition cursorTextPosition = this.selection.base;
+
+          Offset caretOffset =
+              painter.getOffsetForCaret(cursorTextPosition, caretPrototype);
+
+          var preferredLineHeight = painter.preferredLineHeight;
+
+          Offset positiveOffset = Offset(
+            caretOffset.dx > 0 ? caretOffset.dx : -caretOffset.dx,
+            (caretOffset.dy > 0 ? caretOffset.dy : -caretOffset.dy) +
+                preferredLineHeight,
+          );
+          print('isDeleting - $isDeleting');
+          _selectionCheck(positiveOffset, _cursorHeight, isDeleting);
         }
-
-        Rect caretPrototype =
-            Rect.fromLTWH(0.0, 0.0, _cursorWidth, _cursorHeight);
-
-        TextPosition cursorTextPosition = this.selection.base;
-
-        Offset caretOffset =
-            painter.getOffsetForCaret(cursorTextPosition, caretPrototype);
-
-        var preferredLineHeight = painter.preferredLineHeight;
-
-        Offset positiveOffset = Offset(
-          caretOffset.dx > 0 ? caretOffset.dx : -caretOffset.dx,
-          (caretOffset.dy > 0 ? caretOffset.dy : -caretOffset.dy) +
-              preferredLineHeight,
-        );
-        _selectionCheck(positiveOffset, _cursorHeight);
       } catch (e) {
         throw e;
       }
     }
 
     _lastCheckedText = text;
-
+    lastText = text;
     return TextSpan(style: style, children: children);
   }
 
-  setApprovedData(Set<SuggestedDataWrapper> data) {
+  setApprovedData(Set<SuggestedDataWrapper<T>> data) {
     this._suggestibleData = data;
     _notifySuggestions();
   }
 
-  void approveSelection(PrefixMatchState state, SuggestedDataWrapper data) {
+  void approveSelection(PrefixMatchState state, SuggestedDataWrapper<T> data) {
     _approvedData.add(data);
     TextSelection selection = this.selection;
 
@@ -232,11 +286,11 @@ class TypeAheadTextFieldController extends TextEditingController {
 
     String newText = this
         .text
-        .replaceRange(position - replacedLength, position, data.id + ' ');
+        .replaceRange(position - replacedLength, position, data.text + ' ');
 
     text = newText;
 
-    int offset = position + (data.id.length - replacedLength);
+    int offset = position + (data.text.length - replacedLength);
 
     selection = TextSelection.fromPosition(TextPosition(offset: offset + 1));
     _lastCheckedText = newText;
@@ -244,71 +298,80 @@ class TypeAheadTextFieldController extends TextEditingController {
     this.selection = selection;
   }
 
-  void _selectionCheck(Offset dimensionalOffset, double cursorHeight) {
-    if (selection.start > 0) {
-      List<String> texts = text.substring(0, selection.start).split(' ');
-      if (texts.length > 0) {
-        var lines =
-            '\n'.allMatches(text.substring(0, selection.baseOffset)).length + 1;
+  void _selectionCheck(
+      Offset dimensionalOffset, double cursorHeight, bool isDeleting) {
+    try {
+      if (selection.start > 0) {
+        List<String> texts = text.substring(0, selection.start).split(' ');
+        if (texts.length > 0) {
+          var lines =
+              '\n'.allMatches(text.substring(0, selection.baseOffset)).length +
+                  1;
 
-        ///r'(?!(\r\n|\n|\r)).*'
+          ///r'(?!(\r\n|\n|\r)).*'
 
-        var str =
-            appliedPrefixes.map((prefix) => r'(' + prefix + '.*)').join('|');
+          var str =
+              appliedPrefixes.map((prefix) => r'(' + prefix + '.*)').join('|');
 
-        str = '^($str)' + r'(?!(\r\n|\n|\r))$';
+          str = '^($str)' + r'(?!(\r\n|\n|\r))$';
 
-        var generalRegexp = RegExp(str);
+          var generalRegexp = RegExp(str);
 
-        if (generalRegexp.hasMatch(texts.last)) {
-          String prefix = '';
-          appliedPrefixes.forEach((element) {
-            if (texts.last.startsWith(element)) {
-              prefix = element;
-            }
-          });
+          if (generalRegexp.hasMatch(texts.last)) {
+            String prefix = '';
+            appliedPrefixes.forEach((element) {
+              if (texts.last.startsWith(element)) {
+                prefix = element;
+              }
+            });
 
-          if (scrollController.hasClients) {
-            if (scrollController.position.axis == Axis.horizontal) {
-              _scrollOffset =
-                  this.scrollController.position.pixels / devicePixelRatio!;
+            if (scrollController.hasClients) {
+              if (scrollController.position.axis == Axis.horizontal) {
+                _scrollOffset =
+                    this.scrollController.position.pixels / devicePixelRatio!;
+              } else {
+                _scrollOffset = this.scrollController.position.pixels;
+              }
             } else {
-              _scrollOffset = this.scrollController.position.pixels;
+              _scrollOffset = 0.0;
             }
+
+            double physicalOffsetDx = dimensionalOffset.dx;
+
+            double physicalOffsetDy = lines * (cursorHeight + 5) + 12;
+
+            if (_scrollOffset != null && _scrollOffset! >= 0) {
+              if (scrollController.position.axis == Axis.horizontal) {
+                physicalOffsetDx = physicalOffsetDx - (_scrollOffset ?? 0);
+              } else {
+                physicalOffsetDy = physicalOffsetDy - (_scrollOffset ?? 0);
+              }
+            }
+
+            Offset physicalOffset = new Offset(
+                physicalOffsetDx + (edgePadding?.left ?? 0), physicalOffsetDy);
+
+            WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+              final state =
+                  PrefixMatchState(prefix, texts.last, physicalOffset);
+              if (!isDeleting) {
+                onStateChanged?.call(state);
+                _bhMatchedState.add(state);
+              }
+            });
           } else {
-            _scrollOffset = 0.0;
+            WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+              onStateChanged?.call(null);
+            });
           }
-
-          double physicalOffsetDx = dimensionalOffset.dx;
-
-          double physicalOffsetDy = lines * (cursorHeight + 5) + 12;
-
-          if (_scrollOffset != null && _scrollOffset! >= 0) {
-            if (scrollController.position.axis == Axis.horizontal) {
-              physicalOffsetDx = physicalOffsetDx - (_scrollOffset ?? 0);
-            } else {
-              physicalOffsetDy = physicalOffsetDy - (_scrollOffset ?? 0);
-            }
-          }
-
-          Offset physicalOffset = new Offset(
-              physicalOffsetDx + (edgePadding?.left ?? 0), physicalOffsetDy);
-
-          WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-            final state = PrefixMatchState(prefix, texts.last, physicalOffset);
-            onStateChanged?.call(state);
-            _bhMatchedStateList.add(state);
-          });
-        } else {
-          WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-            onStateChanged!(null);
-          });
         }
       }
+    } catch (e) {
+      //print(e);
     }
   }
 
-  Set<SuggestedDataWrapper> getApprovedData() => _approvedData;
+  Set<SuggestedDataWrapper<T>> getApprovedData() => _approvedData;
 
   Offset? calculateGlobalOffset(
       {required BuildContext context,
@@ -361,14 +424,17 @@ class TypeAheadTextFieldController extends TextEditingController {
 
   void _notifySuggestions() {
     _bhMatchedSuggestionList.add(_suggestibleData
-        ?.where(
-            (element) => element.prefix == _bhMatchedStateList.value?.prefix)
+        ?.where((element) => element.prefix == _bhMatchedState.value?.prefix)
         .toList());
+  }
+
+  void setOnRemovingMatchedTextAction(OnRemovingMatchedTextAction action) {
+    _onRemovingMatchedTextAction = action;
   }
 
   @override
   void dispose() {
-    _bhMatchedStateList.close();
+    _bhMatchedState.close();
     _bhMatchedSuggestionList.close();
     _subscription.cancel();
     super.dispose();
@@ -380,7 +446,15 @@ enum TypeAheadAlignEnum { topLeft, topRight, bottomLeft, bottomRight }
 class PrefixMatchState {
   final String prefix;
   final String text;
+
+  get baseText => text.replaceFirst(prefix, '');
   final Offset offset;
 
   PrefixMatchState(this.prefix, this.text, this.offset);
+}
+
+enum OnRemovingMatchedTextAction {
+  nothing,
+  selectAll,
+  removeAll,
 }
